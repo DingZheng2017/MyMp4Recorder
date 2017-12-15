@@ -22,6 +22,12 @@ import java.io.StringWriter;
 import java.nio.ByteBuffer;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.ArrayBlockingQueue;
+
+import encoder.MediaAudioEncoder;
+import encoder.MediaEncoder;
+import encoder.MediaMuxerWrapper;
+import encoder.MediaVideoEncoder;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback {
     int width = 640, height = 480;
@@ -31,10 +37,16 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     SurfaceView surfaceView;
     SurfaceHolder surfaceHolder;
     Camera mCamera;
-      NV21Convertor mConvertor;
+    NV21Convertor mConvertor;
     Button btnSwitch;
     boolean started = false;
     String path = Environment.getExternalStorageDirectory() + "/myMp4.h264";
+    private MediaMuxerWrapper mMuxer;
+    //存储YUV数据的队列，用于从videomideacodec线程里获取
+    private static int yuvqueuesize = 10;
+    public static ArrayBlockingQueue<byte[]> YUVQueue = new ArrayBlockingQueue<byte[]>(yuvqueuesize);
+
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -50,12 +62,20 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
     }
 
+    //放YUV数据
+    public void putYUVData(byte[] buffer) {
+        if (YUVQueue.size() >= yuvqueuesize) {
+            YUVQueue.poll();
+        }
+        YUVQueue.add(buffer);
+    }
+
     private void initMediaCodec() {
         int dgree = getDgree();
         framerate = 15;
         bitrate = 2 * width * height * framerate / 20;
-     //   EncoderDebugger debugger = EncoderDebugger.debug(getApplicationContext(), width, height);
-     //   mConvertor = debugger.getNV21Convertor();
+        //   EncoderDebugger debugger = EncoderDebugger.debug(getApplicationContext(), width, height);
+        //   mConvertor = debugger.getNV21Convertor();
         mConvertor = new NV21Convertor();
         try {
             mMediaCodec = MediaCodec.createEncoderByType("Video/AVC");
@@ -87,7 +107,6 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     }
 
     private void startPreview() {
-        android.util.Log.d("ysh", "startPreview");
         if (mCamera != null && !started) {
             mCamera.startPreview();
             int previewFormat = mCamera.getParameters().getPreviewFormat();
@@ -99,11 +118,44 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             mCamera.setPreviewCallbackWithBuffer(previewCallback);
             started = true;
             btnSwitch.setText("停止");
+            startRecording();
         }
 
 
     }
 
+    private void startRecording() {
+        try {
+        mMuxer = new MediaMuxerWrapper(".mp4");	// if you record audio only, ".m4a" is also OK.
+        if (true) {
+            // for video capturing
+            new MediaVideoEncoder(mMuxer, mMediaEncoderListener, 480, 640);
+        }
+        if (true) {
+            // for audio capturing
+            new MediaAudioEncoder(mMuxer, mMediaEncoderListener);
+        }
+            mMuxer.prepare();
+        } catch (IOException e) {
+            Log.e("ysh", "00000startCapture:", e);
+            e.printStackTrace();
+        }
+        mMuxer.startRecording();
+    }
+    /**
+     * callback methods from encoder
+     */
+    private final MediaEncoder.MediaEncoderListener mMediaEncoderListener = new MediaEncoder.MediaEncoderListener() {
+        @Override
+        public void onPrepared(final MediaEncoder encoder) {
+
+        }
+
+        @Override
+        public void onStopped(final MediaEncoder encoder) {
+
+        }
+    };
 
     private void stopPreview() {
         if (mCamera != null) {
@@ -112,149 +164,96 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             started = false;
             btnSwitch.setText("开始");
         }
+        if (mMuxer != null) {
+            mMuxer.stopRecording();
+            mMuxer = null;
+            // you should not wait here
+        }
 
     }
-
-//    @Override
-//    public void onPreviewFrame(byte[] data, Camera camera) {
-//        android.util.Log.d("ysh", "onPreviewFrame");
-//        //喂数据给encoder
-//        if (data == null) {
-//            android.util.Log.d("ysh", "data == null");
-//            return;
-//        }
-//        ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();//拿到mediacodec所有输入缓冲队列
-//        ByteBuffer[] outputBuffers = mMediaCodec.getOutputBuffers();
-//        Camera.Size previewSize = mCamera.getParameters().getPreviewSize();
-//        byte[] dst = new byte[data.length];
-//        if (getDgree() == 0) {
-//            dst = Util.rotateNV21Degree90(data, previewSize.width, previewSize.height);
-//        } else {
-//            dst = data;
-//        }
-//        try {
-//            int bufferIndex = mMediaCodec.dequeueInputBuffer(5000000);//dequeueInputBuffer与queueInputBuffer成对使用
-//            Log.d("ysh", "bufferIndex : "+bufferIndex );
-//            if (bufferIndex >= 0) {
-//                inputBuffers[bufferIndex].clear();
-//                mConvertor.convert(dst, inputBuffers[bufferIndex]);//将获取到的数据塞入得到的input里uffer里
-//                mMediaCodec.queueInputBuffer(bufferIndex, 0, inputBuffers[bufferIndex].position(), System.nanoTime() / 1000, 0);
-//                MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-//                int outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
-//                Log.d("ysh", "outputBufferIndex : "+outputBufferIndex );
-//                while (outputBufferIndex >= 0) {
-//                    Log.d("ysh", "outputBufferIndex>= 0");
-//                    ByteBuffer outputBuffer = outputBuffers[outputBufferIndex];
-//                    byte[] outData = new byte[bufferInfo.size];
-//                    outputBuffer.get(outData);//取出的数据存入outData中
-//                    //记录pps和sps
-//                    if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 103) {
-//                        mPpsSps = outData;
-//                    } else if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 101) {
-//                        //在关键帧前面加上pps和sps数据
-//                        byte[] iframeData = new byte[mPpsSps.length + outData.length];
-//                        System.arraycopy(mPpsSps, 0, iframeData, 0, mPpsSps.length);
-//                        System.arraycopy(outData, 0, iframeData, mPpsSps.length, outData.length);
-//                        outData = iframeData;
-//                    }
-//                    Util.save(outData, 0, outData.length, path, true);
-//                    mMediaCodec.releaseOutputBuffer(outputBufferIndex, false);
-//                    outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
-//                }
-//            } else {
-//                Log.e("ysh", "No buffer available !");
-//            }
-//        } catch (Exception e) {
-//            StringWriter sw = new StringWriter();
-//            PrintWriter pw = new PrintWriter(sw);
-//            e.printStackTrace(pw);
-//            String stack = sw.toString();
-//            Log.e("save_log", stack);
-//            e.printStackTrace();
-//        } finally {
-//            mCamera.addCallbackBuffer(dst);
-//        }
-//
-//    }
 
 
     Camera.PreviewCallback previewCallback = new Camera.PreviewCallback() {
         byte[] mPpsSps = new byte[0];
+
         @Override
         public void onPreviewFrame(byte[] data, Camera camera) {
-            android.util.Log.d("ysh","xxxxxxxxx mPpsSps:   "+mPpsSps.length);
+            android.util.Log.d("ysh", "xxxxxxxxx mPpsSps:   " + mPpsSps.length);
+
             if (data == null) {
                 android.util.Log.d("ysh", "data == null");
                 return;
             }
-            ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();
-            ByteBuffer[] outputBuffers = mMediaCodec.getOutputBuffers();
-            byte[] dst = new byte[data.length];
-            Camera.Size previewSize = mCamera.getParameters().getPreviewSize();
-            if (getDgree() == 0) {
-                dst = Util.rotateNV21Degree90(data, previewSize.width, previewSize.height);
-            } else {
-                dst = data;
-            }
-            try {
-                int bufferIndex = mMediaCodec.dequeueInputBuffer(5000000);
-                Log.d("ysh", "bufferIndex : "+bufferIndex );
-                if (bufferIndex >= 0) {
-                    inputBuffers[bufferIndex].clear();
-                    //将YUV420SP数据转换成YUV420P的格式，并将结果存入inputBuffers[bufferIndex]
-                    mConvertor.convert(dst, inputBuffers[bufferIndex]);
-                    mMediaCodec.queueInputBuffer(bufferIndex, 0,
-                            inputBuffers[bufferIndex].position(),
-                            System.nanoTime() / 1000, 0);
-                    MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-                    int outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
-                    while (outputBufferIndex >= 0) {
-                        Log.d("ysh", "outputBufferIndex>= 0");
-                        ByteBuffer outputBuffer = outputBuffers[outputBufferIndex];
-                        byte[] outData = new byte[bufferInfo.size];
-                        //从buff中读取数据到outData中
-                        outputBuffer.get(outData);
-                        //记录pps和sps，pps和sps数据开头是0x00 0x00 0x00 0x01 0x67，
-                        if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 103) {
-                            mPpsSps = outData;
-                        } else if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 101) {
-                            //关键帧开始规则是0x00 0x00 0x00 0x01 0x65，0x65对应十进制101
-                            //在关键帧前面加上pps和sps数据
-                            byte[] iframeData = new byte[mPpsSps.length + outData.length];
-                            System.arraycopy(mPpsSps, 0, iframeData, 0, mPpsSps.length);
-                            System.arraycopy(outData, 0, iframeData, mPpsSps.length, outData.length);
-                            outData = iframeData;
-                        }
-                        Util.save(outData, 0, outData.length, path, true);
-                        mMediaCodec.releaseOutputBuffer(outputBufferIndex, false);
-                        outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
-                    }
-                } else {
-                    Log.e("ysh", "No buffer available !");
-                }
-            } catch (Exception e) {
-                StringWriter sw = new StringWriter();
-                PrintWriter pw = new PrintWriter(sw);
-                e.printStackTrace(pw);
-                String stack = sw.toString();
-                Log.e("save_log", stack);
-                e.printStackTrace();
-            } finally {
-                mCamera.addCallbackBuffer(dst);
-            }
+
+            putYUVData(data);
+            mCamera.addCallbackBuffer(data);
+//            ByteBuffer[] inputBuffers = mMediaCodec.getInputBuffers();
+//            ByteBuffer[] outputBuffers = mMediaCodec.getOutputBuffers();
+//            byte[] dst = new byte[data.length];
+//            Camera.Size previewSize = mCamera.getParameters().getPreviewSize();
+//            if (getDgree() == 0) {
+//                dst = Util.rotateNV21Degree90(data, previewSize.width, previewSize.height);
+//            } else {
+//                dst = data;
+//            }
+//            try {
+//                int bufferIndex = mMediaCodec.dequeueInputBuffer(5000000);
+//                Log.d("ysh", "bufferIndex : "+bufferIndex );
+//                if (bufferIndex >= 0) {
+//                    inputBuffers[bufferIndex].clear();
+//                    //将YUV420SP数据转换成YUV420P的格式，并将结果存入inputBuffers[bufferIndex]
+//                    mConvertor.convert(dst, inputBuffers[bufferIndex]);
+//                    mMediaCodec.queueInputBuffer(bufferIndex, 0,
+//                            inputBuffers[bufferIndex].position(),
+//                            System.nanoTime() / 1000, 0);
+//                    MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+//                    int outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
+//                    while (outputBufferIndex >= 0) {
+//                        Log.d("ysh", "outputBufferIndex>= 0");
+//                        ByteBuffer outputBuffer = outputBuffers[outputBufferIndex];
+//                        byte[] outData = new byte[bufferInfo.size];
+//                        //从buff中读取数据到outData中
+//                        outputBuffer.get(outData);
+//                        //记录pps和sps，pps和sps数据开头是0x00 0x00 0x00 0x01 0x67，
+//                        if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 103) {
+//                            mPpsSps = outData;
+//                        } else if (outData[0] == 0 && outData[1] == 0 && outData[2] == 0 && outData[3] == 1 && outData[4] == 101) {
+//                            //关键帧开始规则是0x00 0x00 0x00 0x01 0x65，0x65对应十进制101
+//                            //在关键帧前面加上pps和sps数据
+//                            byte[] iframeData = new byte[mPpsSps.length + outData.length];
+//                            System.arraycopy(mPpsSps, 0, iframeData, 0, mPpsSps.length);
+//                            System.arraycopy(outData, 0, iframeData, mPpsSps.length, outData.length);
+//                            outData = iframeData;
+//                        }
+//                        Util.save(outData, 0, outData.length, path, true);
+//                        mMediaCodec.releaseOutputBuffer(outputBufferIndex, false);
+//                        outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 0);
+//                    }
+//                } else {
+//                    Log.e("ysh", "No buffer available !");
+//                }
+//            } catch (Exception e) {
+//                StringWriter sw = new StringWriter();
+//                PrintWriter pw = new PrintWriter(sw);
+//                e.printStackTrace(pw);
+//                String stack = sw.toString();
+//                Log.e("save_log", stack);
+//                e.printStackTrace();
+//            } finally {
+//                mCamera.addCallbackBuffer(dst);
+//            }
+//        }
         }
-
     };
-
 
 
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         surfaceHolder = holder;
-        ctreateCamera(surfaceHolder);
+        createCamera(surfaceHolder);
     }
 
-    private boolean ctreateCamera(SurfaceHolder surfaceHolder) {
+    private boolean createCamera(SurfaceHolder surfaceHolder) {
         try {
             mCamera = Camera.open(mCameraId);
             Camera.Parameters parameters = mCamera.getParameters();
@@ -282,7 +281,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             PrintWriter pw = new PrintWriter(sw);
             e.printStackTrace(pw);
             String stack = sw.toString();
-            Toast.makeText(this, stack, Toast.LENGTH_LONG).show();
+            //      Toast.makeText(this, stack, Toast.LENGTH_LONG).show();
             destroyCamera();
             e.printStackTrace();
             return false;
@@ -356,3 +355,4 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         mMediaCodec = null;
     }
 }
+
